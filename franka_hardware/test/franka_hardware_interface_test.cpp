@@ -1063,11 +1063,54 @@ TEST_F(FrankaHardwareInterfaceTest,
   MockModel* model_address = &mock_model;
 
   EXPECT_CALL(*default_mock_robot, getModel()).WillRepeatedly(testing::Return(model_address));
+  // The latch triggers one automatic recovery attempt and a re-read; the re-read throws again, so
+  // the fault is not self-clearable and activation must still fail.
   EXPECT_CALL(*default_mock_robot, readOnce())
+      .WillOnce(testing::Throw(franka::ControlException("test activation reflex")))
       .WillOnce(testing::Throw(franka::ControlException("test activation reflex")));
+  EXPECT_CALL(*default_mock_robot, automaticErrorRecovery()).Times(1);
   EXPECT_CALL(*default_mock_robot, stopRobot()).Times(0);
 
   // read() returns OK after latching; activation must still fail before buffer inspect.
+  ASSERT_EQ(default_franka_hardware_interface.on_activate(rclcpp_lifecycle::State()),
+            CallbackReturn::FAILURE);
+}
+
+TEST_F(FrankaHardwareInterfaceTest,
+       givenRecoverableFaultDuringActivation_whenOnActivateCalled_thenRecoveryRunsAndSucceeds) {
+  MockModel mock_model;
+  MockModel* model_address = &mock_model;
+  const franka::RobotState error_state = makeRobotStateWithJointReflexError();
+  franka::RobotState recovered_state;
+
+  // The whole point of the fork patch: a fault the robot CAN clear must not block bring-up.
+  // startXInterface() recovers the same way on its own ControlException path, but the activation
+  // guard runs before any command mode switch, so without this that recovery is unreachable.
+  EXPECT_CALL(*default_mock_robot, getModel()).WillRepeatedly(testing::Return(model_address));
+  EXPECT_CALL(*default_mock_robot, readOnce())
+      .WillOnce(testing::Return(error_state))
+      .WillOnce(testing::Return(recovered_state));
+  EXPECT_CALL(*default_mock_robot, automaticErrorRecovery()).Times(1);
+  EXPECT_CALL(*default_mock_robot, stopRobot()).Times(0);
+
+  ASSERT_EQ(default_franka_hardware_interface.on_activate(rclcpp_lifecycle::State()),
+            CallbackReturn::SUCCESS);
+}
+
+TEST_F(FrankaHardwareInterfaceTest,
+       givenRecoveryThrowsDuringActivation_whenOnActivateCalled_thenActivationFails) {
+  MockModel mock_model;
+  MockModel* model_address = &mock_model;
+  const franka::RobotState error_state = makeRobotStateWithJointReflexError();
+
+  // Recovery refusing is the robot saying the fault is not self-clearable. The throw must not
+  // escape on_activate; it falls through to the guard, which declines.
+  EXPECT_CALL(*default_mock_robot, getModel()).WillRepeatedly(testing::Return(model_address));
+  EXPECT_CALL(*default_mock_robot, readOnce()).WillRepeatedly(testing::Return(error_state));
+  EXPECT_CALL(*default_mock_robot, automaticErrorRecovery())
+      .WillOnce(testing::Throw(franka::CommandException("recovery refused")));
+  EXPECT_CALL(*default_mock_robot, stopRobot()).Times(0);
+
   ASSERT_EQ(default_franka_hardware_interface.on_activate(rclcpp_lifecycle::State()),
             CallbackReturn::FAILURE);
 }
@@ -1098,11 +1141,14 @@ TEST_F(FrankaHardwareInterfaceTest,
   testing::Mock::VerifyAndClearExpectations(default_mock_robot.get());
 
   // After deactivate, real HW returns a RobotState with kReflex (not another ControlException).
-  // State-based activation FAILURE must not call stopRobot.
+  // State-based activation FAILURE must not call stopRobot. Activation attempts one automatic
+  // recovery and re-reads, so reflex has to persist across BOTH reads for it to decline.
   EXPECT_CALL(*default_mock_robot, getModel()).WillRepeatedly(testing::Return(model_address));
   EXPECT_CALL(*default_mock_robot, readOnce())
       .WillOnce(testing::Return(reflex_state))
+      .WillOnce(testing::Return(reflex_state))
       .WillOnce(testing::Return(recovered_state));
+  EXPECT_CALL(*default_mock_robot, automaticErrorRecovery()).Times(1);
   EXPECT_CALL(*default_mock_robot, stopRobot()).Times(0);
 
   ASSERT_EQ(default_franka_hardware_interface.on_activate(rclcpp_lifecycle::State()),
@@ -1122,8 +1168,10 @@ TEST_F(
   MockModel* model_address = &mock_model;
   const franka::RobotState error_state = makeRobotStateWithJointReflexError();
 
+  // Errors persist across the recovery attempt and its re-read, so activation declines.
   EXPECT_CALL(*default_mock_robot, getModel()).WillRepeatedly(testing::Return(model_address));
-  EXPECT_CALL(*default_mock_robot, readOnce()).WillOnce(testing::Return(error_state));
+  EXPECT_CALL(*default_mock_robot, readOnce()).WillRepeatedly(testing::Return(error_state));
+  EXPECT_CALL(*default_mock_robot, automaticErrorRecovery()).Times(1);
   EXPECT_CALL(*default_mock_robot, stopRobot()).Times(0);
 
   ASSERT_EQ(default_franka_hardware_interface.on_activate(rclcpp_lifecycle::State()),

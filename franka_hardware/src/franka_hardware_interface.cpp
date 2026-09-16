@@ -176,18 +176,34 @@ CallbackReturn FrankaHardwareInterface::on_activate(
     return CallbackReturn::ERROR;
   }
 
-  // Defensive: read() returns OK when it latches a ControlException without refreshing state.
-  // Refuse activation on that latch before inspecting the robot state box.
-  if (control_fault_latched_.load()) {
-    RCLCPP_ERROR(getLogger(),
-                 "Cannot activate hardware while a control fault is latched. "
-                 "Clear the robot error before activating the hardware.");
-    return CallbackReturn::FAILURE;
+  // read() returns OK when it latches a ControlException without refreshing state, so the latch
+  // is a fault signal in its own right and is treated as one both below and in the final guard.
+  franka::RobotState robot_state = robot_state_box_.get();
+
+  // A latched reflex or error blocks activation, but try to clear it ONCE before refusing.
+  // startXInterface() already does exactly this on its own ControlException path, so before this
+  // guard existed a stale fault was cleared implicitly by the first command mode switch.  The
+  // guard runs earlier than any switch, so without this the recovery that used to happen is
+  // simply unreachable and a fault the robot could have cleared itself blocks bring-up forever.
+  if (control_fault_latched_.load() || robot_state.robot_mode == franka::RobotMode::kReflex ||
+      static_cast<bool>(robot_state.current_errors)) {
+    RCLCPP_WARN(getLogger(), "Robot reports a latched fault; attempting automatic error recovery.");
+    try {
+      robot_->automaticErrorRecovery();
+    } catch (const franka::Exception& e) {
+      // Recovery itself refusing is the robot saying this is not self-clearable; fall through to
+      // the guard below, which reports what is still latched and declines.
+      RCLCPP_ERROR(getLogger(), "Automatic error recovery failed: %s", e.what());
+    }
+    control_fault_latched_.store(false);
+    if (read(rclcpp::Time(0), rclcpp::Duration(0, 0)) != hardware_interface::return_type::OK) {
+      return CallbackReturn::ERROR;
+    }
+    robot_state = robot_state_box_.get();
   }
 
-  // Refuse activation while the robot is still in reflex or reports active errors.
-  const franka::RobotState robot_state = robot_state_box_.get();
-  if (robot_state.robot_mode == franka::RobotMode::kReflex ||
+  // Refuse activation while the robot is STILL in reflex or reports active errors.
+  if (control_fault_latched_.load() || robot_state.robot_mode == franka::RobotMode::kReflex ||
       static_cast<bool>(robot_state.current_errors)) {
     const std::string error_detail =
         static_cast<bool>(robot_state.current_errors)
@@ -195,7 +211,8 @@ CallbackReturn FrankaHardwareInterface::on_activate(
             : "";
     RCLCPP_ERROR(getLogger(),
                  "Cannot activate hardware while the robot is in reflex or has active errors%s. "
-                 "Clear the robot error before activating the hardware.",
+                 "Automatic error recovery did not clear it; clear the robot error before "
+                 "activating the hardware.",
                  error_detail.c_str());
     return CallbackReturn::FAILURE;
   }
