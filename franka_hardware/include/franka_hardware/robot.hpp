@@ -138,6 +138,19 @@ class Robot {
       const franka_msgs::srv::SetJointStiffness::Request::SharedPtr& req);
 
   /**
+   * Enables or disables libfranka's rate limiter on joint velocity commands.
+   *
+   * @details Off by default, matching upstream. When on, each command is clamped against
+   * libfranka's joint velocity, acceleration and jerk ceilings before it reaches the robot.
+   *
+   * @details Intended for a commanded profile rough enough to trip the motion generator's
+   * discontinuity reflex. Clamping costs responsiveness near a limit, so it is opt-in.
+   *
+   * @param[in] active whether to clamp joint velocity commands.
+   */
+  void setJointVelocityCommandRateLimit(bool active);
+
+  /**
    * Sets the Cartesian stiffness (for x, y, z, roll, pitch, yaw) in the internal
    * controller.
    *

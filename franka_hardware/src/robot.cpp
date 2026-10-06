@@ -173,13 +173,20 @@ void Robot::writeOnceJointEfforts(const std::array<double, 7>& efforts) {
   active_control_->writeOnce(torque_command);
 }
 
+void Robot::setJointVelocityCommandRateLimit(bool active) {
+  // Takes the same mutex as the write path that reads this flag. Called before activation, so
+  // it never contends; the lock is what makes that assumption safe to be wrong about.
+  std::lock_guard<realtime_tools::prio_inherit_mutex> lock(control_mutex_);
+  velocity_command_rate_limit_active_ = active;
+}
+
 void Robot::writeOnceJointVelocities(const std::array<double, 7>& velocities) {
   std::lock_guard<realtime_tools::prio_inherit_mutex> lock(control_mutex_);
 
   auto velocity_command = franka::JointVelocities(velocities);
 
-  // If you are experiencing issues with robot error. You can try activating the rate limiter.
-  // Rate limiter is default deactivated.
+  // Clamps against libfranka's own velocity, acceleration and jerk ceilings when enabled.
+  // Opt-in via the joint_velocity_command_rate_limit hardware parameter; upstream ships it off.
   if (velocity_command_rate_limit_active_) {
     velocity_command.dq = franka::limitRate(
         franka::computeUpperLimitsJointVelocity(current_state_.q_d),

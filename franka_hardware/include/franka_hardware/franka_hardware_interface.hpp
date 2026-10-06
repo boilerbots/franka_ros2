@@ -101,6 +101,11 @@ class FrankaHardwareInterface : public hardware_interface::SystemInterface {
   std::atomic<bool> control_fault_latched_{false};
   double robot_time_state_{0.0};
 
+  // Throttle period for the skipped-cycle warnings, long enough that a mode switch reports
+  // once rather than per cycle. Steady clock: unaffected by sim time or a wall-clock jump.
+  static constexpr int kSkippedCycleLogPeriodMs = 1000;
+  rclcpp::Clock clock_{RCL_STEADY_TIME};
+
   std::shared_ptr<Robot> robot_;
   std::shared_ptr<FrankaParamServiceServer> service_node_;
   std::shared_ptr<ActionServer> action_node_;

@@ -35,6 +35,7 @@
 const std::string kVersionName = "version";
 const std::string kRobotIpName = "robot_ip";
 const std::string kArmIdName = "robot_type";
+const std::string kJointVelocityRateLimitName = "joint_velocity_command_rate_limit";
 
 namespace {
 
@@ -319,7 +320,10 @@ hardware_interface::return_type FrankaHardwareInterface::read(const rclcpp::Time
   // therefore the correct behaviour: no FCI traffic is possible while a switch owns the robot.
   std::unique_lock<realtime_tools::prio_inherit_mutex> lock(control_mutex_, std::try_to_lock);
   if (!lock.owns_lock()) {
-    RCLCPP_DEBUG(getLogger(), "read() skipped: a command mode switch owns the robot");
+    // Visible by default and throttled: a skipped cycle is lost FCI traffic, and a burst of them
+    // is the first thing to check against a communication_constraints_violation.
+    RCLCPP_WARN_THROTTLE(getLogger(), clock_, kSkippedCycleLogPeriodMs,
+                         "read() skipped: a command mode switch owns the robot");
     return hardware_interface::return_type::OK;
   }
   if (hw_franka_model_ptr_ == nullptr) {
@@ -367,7 +371,10 @@ hardware_interface::return_type FrankaHardwareInterface::write(const rclcpp::Tim
   // Try, do not wait.  Same reasoning as read() above.
   std::unique_lock<realtime_tools::prio_inherit_mutex> lock(control_mutex_, std::try_to_lock);
   if (!lock.owns_lock()) {
-    RCLCPP_DEBUG(getLogger(), "write() skipped: a command mode switch owns the robot");
+    // A skipped write is a cycle the robot receives no command for, which is the half of this
+    // that a motion generator can notice. Throttled for the same reason as read().
+    RCLCPP_WARN_THROTTLE(getLogger(), clock_, kSkippedCycleLogPeriodMs,
+                         "write() skipped: a command mode switch owns the robot");
     return hardware_interface::return_type::OK;
   }
 
@@ -497,6 +504,22 @@ CallbackReturn FrankaHardwareInterface::on_init(const hardware_interface::Hardwa
       return CallbackReturn::ERROR;
     }
     RCLCPP_INFO(getLogger(), "Successfully connected to robot");
+  }
+
+  // Applied after the robot exists so an injected robot is configured too. Absent means off,
+  // which is upstream's behaviour; an unparseable value is refused rather than assumed.
+  if (info_.hardware_parameters.count(kJointVelocityRateLimitName) != 0) {
+    const auto& value = info_.hardware_parameters.at(kJointVelocityRateLimitName);
+    if (value == "true" || value == "True" || value == "1") {
+      robot_->setJointVelocityCommandRateLimit(true);
+      RCLCPP_INFO(getLogger(), "Joint velocity command rate limiting is ENABLED.");
+    } else if (value == "false" || value == "False" || value == "0") {
+      robot_->setJointVelocityCommandRateLimit(false);
+    } else {
+      RCLCPP_FATAL(getLogger(), "Parameter '%s' must be true or false, got '%s'",
+                   kJointVelocityRateLimitName.c_str(), value.c_str());
+      return CallbackReturn::ERROR;
+    }
   }
 
   service_node_ =
