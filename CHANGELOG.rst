@@ -1,8 +1,8 @@
 Changelog for package franka_ros2
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-UNRELEASED
-----------
+v3.6.0 (2026-10-06)
+-------------------
 Requires libfranka >= 0.20.4 and franka_description >= 2.9.0 requires ROS 2 Jazzy
 
 * fix: polling the spine eventually killed its REST API until the TMR was
