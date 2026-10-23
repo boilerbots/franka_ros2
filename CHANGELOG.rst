@@ -1,6 +1,31 @@
 Changelog for package franka_ros2
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
+v3.6.0 (2026-10-06)
+-------------------
+Requires libfranka >= 0.20.4 and franka_description >= 2.9.0 requires ROS 2 Jazzy
+
+* fix: polling the spine eventually killed its REST API until the TMR was
+  rebooted. Every ``~/get_position`` call ran its own request on its own
+  connection, so once the device answered slower than the poll period the
+  requests stacked up until nginx returned ``504 Gateway Time-out``. Position
+  and state are now read through a cache that keeps one request in flight,
+  serves anything younger than one ``feedback_rate`` period from memory, and
+  leaves the endpoint alone for ``retry_delay`` after a failed read. The device
+  sees at most ``feedback_rate`` requests per second per endpoint regardless of
+  how many clients call the services or subscribe to the topics.
+* feat: spine publishes ``~/position`` (``SpinePosition``) and ``~/state``
+  (``SpineState``) at ``feedback_rate``, so a continuous stream no longer
+  requires calling a service in a loop. Nothing is read while nobody is
+  subscribed.
+* feat: new spine parameter ``retry_delay`` (default 0.5 s), the pause before
+  an endpoint is retried after a failed read.
+* fix: spine ``http_timeout`` default lowered from 3 s to 2 s so a stuck read
+  is dropped before the next poll period piles onto it.
+* fix: ``move_absolute`` sampled the spine state on every feedback cycle,
+  doubling the request rate during a move. The drive stops itself on a fault
+  and this poll only reports it, so it now samples at most every 0.5 s.
+
 v3.5.3 (2026-09-01)
 -------------------
 Requires libfranka >= 0.20.4 and franka_description >= 2.9.0 requires ROS 2 Jazzy
